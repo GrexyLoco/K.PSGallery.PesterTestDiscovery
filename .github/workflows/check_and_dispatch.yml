@@ -1,0 +1,688 @@
+name: 🚀 Smart Powershell Module Release Pipeline - PesterTestDiscovery
+
+# 🎯 Triggers: Push to master branch (e.g., PR merge)
+# 📋 Required Repository Variables:
+# - UBUNTU_VERSION: Ubuntu runner version (e.g., "ubuntu-22.04")
+# 📋 Required Repository Secrets:  
+# - REPO_DISPATCH_TOKEN: Personal Access Token for cross-repo dispatch
+
+on:
+  push:
+    branches: [master, main]
+
+env:
+  # 🌍 Global environment variables for consistency
+  RELEASE_AUTHOR: "github-actions[bot]"
+  RELEASE_EMAIL: "github-actions[bot]@users.noreply.github.com"
+  MODULE_NAME: 'K.PSGallery.PesterTestDiscovery'
+
+jobs:
+  validate:
+    name: 🔐 Security & 🧪 Tests
+    runs-on: ${{ vars.UBUNTU_VERSION || 'ubuntu-24.04' }}
+    outputs:
+      test-success: ${{ steps.validation.outputs.test-success }}
+      total-tests: ${{ steps.validation.outputs.total-tests }}
+      passed-tests: ${{ steps.validation.outputs.passed-tests }}
+      failed-tests: ${{ steps.validation.outputs.failed-tests }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 🧪 Validate PowerShell Module
+        id: validation
+        uses: GrexyLoco/K.Actions.PSModuleValidation@v1.0.1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          module-name: ${{ env.MODULE_NAME }}
+
+  release:
+    name: 🚀 Smart Release
+    needs: validate
+    runs-on: ${{ vars.UBUNTU_VERSION || 'ubuntu-24.04' }}
+    outputs:
+      new-version: ${{ steps.version.outputs.newVersion }}
+      bump-type: ${{ steps.version.outputs.bumpType }}
+      release-created: ${{ steps.version.outputs.bumpType != 'none' }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: ⬆️ Analyze next version
+        id: version
+        uses: GrexyLoco/K.Actions.NextVersion@latest
+        with:
+          branchName: ${{ github.ref_name }}
+
+      - name: 🛑 Skip if no changes
+        if: steps.version.outputs.bumpType == 'none'
+        run: |
+          echo "## 🔁 No Release Required" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "No version changes detected. Skipping release." >> $GITHUB_STEP_SUMMARY
+          echo "ℹ️ **No changes detected** - workflow will exit gracefully" >> $GITHUB_STEP_SUMMARY
+          
+          echo "## 🔁 No Release Required"
+          echo "No version changes detected. Skipping release."
+          echo "ℹ️ Workflow will exit gracefully"
+
+      - name: 📝 Update PowerShell Module Version
+        if: steps.version.outputs.bumpType != 'none'
+        shell: pwsh
+        run: |
+          Write-Host "🔧 Updating PSD1 ModuleVersion..."
+          
+          # 📝 Summary output
+          "## 📝 PowerShell Module Version Update" >> $env:GITHUB_STEP_SUMMARY
+          "" >> $env:GITHUB_STEP_SUMMARY
+          
+          # 🔍 Find PSD1 files in current directory
+          $psd1Files = Get-ChildItem -Filter "*.psd1" -File
+          
+          if ($psd1Files.Count -eq 0) {
+            Write-Host "⚠️ No PSD1 files found - skipping version update"
+            "⚠️ **No PSD1 files found** - skipping version update" >> $env:GITHUB_STEP_SUMMARY
+            exit 0
+          }
+          
+          $newVersion = "${{ steps.version.outputs.newVersion }}"
+          Write-Host "📦 New version: $newVersion"
+          
+          "**Target Version:** ``$newVersion``" >> $env:GITHUB_STEP_SUMMARY
+          "" >> $env:GITHUB_STEP_SUMMARY
+          "### Updated Files:" >> $env:GITHUB_STEP_SUMMARY
+          
+          foreach ($psd1File in $psd1Files) {
+            Write-Host "📝 Updating: $($psd1File.Name)"
+            
+            # 📖 Read current content
+            $content = Get-Content $psd1File.FullName -Raw
+            
+            # 🔄 Replace ModuleVersion
+            $updatedContent = $content -replace "ModuleVersion\s*=\s*'[^']*'", "ModuleVersion = '$newVersion'"
+            
+            # ✍️ Write back
+            Set-Content -Path $psd1File.FullName -Value $updatedContent -NoNewline
+            
+            Write-Host "✅ Updated $($psd1File.Name) to version $newVersion"
+            "- ✅ ``$($psd1File.Name)`` → ``$newVersion``" >> $env:GITHUB_STEP_SUMMARY
+          }
+
+      - name: 💾 Commit PSD1 version update
+        if: steps.version.outputs.bumpType != 'none'
+        run: |
+          git config user.name "${{ env.RELEASE_AUTHOR }}"
+          git config user.email "${{ env.RELEASE_EMAIL }}"
+          
+          # 📝 Summary header
+          echo "## 💾 Version Commit" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # 📋 Check if there are changes
+          if git diff --quiet; then
+            echo "ℹ️ No PSD1 changes to commit"
+            echo "ℹ️ **No PSD1 changes** to commit" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "📝 Committing PSD1 version update..."
+            git add "*.psd1"
+            git commit -m "🔖 Update module version to ${{ steps.version.outputs.newVersion }}
+
+            Auto-updated by release workflow
+            - Bump type: ${{ steps.version.outputs.bumpType }}
+            - Triggered by: ${{ github.actor }}"
+            
+            echo "📤 Pushing version update..."
+            git push origin ${{ github.ref_name }}
+            echo "✅ PSD1 version update committed and pushed"
+            
+            # 📝 Summary output
+            echo "✅ **PSD1 version committed and pushed**" >> $GITHUB_STEP_SUMMARY
+            echo "- Version: \`${{ steps.version.outputs.newVersion }}\`" >> $GITHUB_STEP_SUMMARY
+            echo "- Bump: \`${{ steps.version.outputs.bumpType }}\`" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: 🔄 Re-fetch after PSD1 update
+        if: steps.version.outputs.bumpType != 'none'
+        run: |
+          echo "🔄 Re-fetching repository state after PSD1 update..."
+          git fetch origin ${{ github.ref_name }}
+          git reset --hard origin/${{ github.ref_name }}
+          echo "✅ Repository state synchronized"
+
+      - name: 📦 Create GitHub Release
+        if: steps.version.outputs.bumpType != 'none'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 📝 Summary header
+          echo "## 📦 GitHub Release Creation" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # 🎨 Custom release notes template
+          VERSION="${{ steps.version.outputs.newVersion }}"
+          # 🔧 Fix: Extract MAJOR/MINOR without 'v' prefix
+          MAJOR=$(echo "$VERSION" | sed -E 's/^([0-9]+)\..*/\1/')
+          MINOR=$(echo "$VERSION" | sed -E 's/^([0-9]+\.[0-9]+)\..*/\1/')
+          
+          echo "🔍 Debug: VERSION=$VERSION, MAJOR=$MAJOR, MINOR=$MINOR"
+          
+          # Create release notes with enhanced links and date formatting
+          RELEASE_DATE=$(date -u '+%B %d, %Y at %H:%M UTC')
+          {
+            echo "## 🎉 Release v$VERSION"
+            echo ""
+            echo "> **${{ steps.version.outputs.bumpType }}** release • Released on $RELEASE_DATE"
+            echo ""
+            echo "### 📦 Quick Access Links"
+            echo "- 🔗 **[📦 PowerShell Gallery](https://www.powershellgallery.com/packages/K.PSGallery.PesterTestDiscovery/$VERSION)** - Install with \`Install-Module\`"
+            echo "- 📁 **[🔧 Source Code](https://github.com/${{ github.repository }})** - View the source"
+            echo "- 🏷️ **[🎯 This Release](https://github.com/${{ github.repository }}/releases/tag/v$VERSION)** - Release details"
+            echo "- 📋 **[📚 All Releases](https://github.com/${{ github.repository }}/releases)** - Version history"
+            echo "- 🔄 **[⚙️ GitHub Actions](https://github.com/${{ github.repository }}/actions)** - Build pipeline"
+            echo ""
+            echo "### 🚀 Installation & Usage"
+            echo '```powershell'
+            echo "# Install from PowerShell Gallery"
+            echo "Install-Module -Name K.PSGallery.PesterTestDiscovery -RequiredVersion $VERSION"
+            echo ""
+            echo "# Or install latest version"
+            echo "Install-Module -Name K.PSGallery.PesterTestDiscovery"
+            echo '```'
+            echo ""
+            echo '```yaml'
+            echo "# For GitHub Actions workflows:"
+            echo "uses: GrexyLoco/K.Actions.PSModuleValidation@v$VERSION"
+            echo '```'
+            echo ""
+            echo "### 🏷️ Version Tags (Auto-Updated)"
+            echo "| Tag | Purpose | Points to | Auto-Updates |"
+            echo "|-----|---------|-----------|--------------|"
+            echo "| \`@latest\` | Always newest | \`v$VERSION\` | ✅ Every release |"
+            echo "| \`@v$VERSION\` | This exact version | \`v$VERSION\` | ❌ Pinned forever |"
+            echo "| \`@v$MAJOR\` | Major version line | \`v$VERSION\` | ✅ Minor + Patch |"
+            echo "| \`@v$MINOR\` | Minor version line | \`v$VERSION\` | ✅ Patch only |"
+            echo ""
+            echo "### 🔄 PowerShell Gallery"
+            echo "This module will be automatically published to [PowerShell Gallery](https://www.powershellgallery.com/packages/K.PSGallery.PesterTestDiscovery) within minutes."
+            echo ""
+            echo "---"
+            echo "*Generated by [K.Actions.NextVersion](https://github.com/GrexyLoco/K.Actions.NextVersion)*"
+          } > release_notes.md
+          
+          # 📦 Smart GitHub Release creation
+          RELEASE_TAG="v${{ steps.version.outputs.newVersion }}"
+          VERSION="${{ steps.version.outputs.newVersion }}"
+          
+          # 🔍 Check if this is a prerelease (alpha, beta, rc)
+          IS_PRERELEASE="false"
+          if [[ "$VERSION" =~ (alpha|beta|rc|preview|pre) ]]; then
+            IS_PRERELEASE="true"
+            echo "🧪 Detected prerelease version: $VERSION"
+            echo "🧪 **Prerelease detected:** \`$VERSION\`" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "🚀 Detected stable release: $VERSION"
+            echo "🚀 **Stable release:** \`$VERSION\`" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "📦 Creating GitHub Release $RELEASE_TAG..."
+          
+          # 🔧 Robust handling for duplicate releases (delete and recreate if exists)
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "⚠️ Release $RELEASE_TAG already exists - deleting and recreating!"
+            echo "🗑️ **Deleting existing release** (duplicate protection)" >> $GITHUB_STEP_SUMMARY
+            
+            # 🗑️ Delete existing release (without tag cleanup to avoid reference errors)
+            gh release delete "$RELEASE_TAG" --yes 2>/dev/null || true
+            echo "✅ Existing release deleted"
+            
+            # 🏷️ Check if tag exists and delete it separately if needed
+            if git tag -l | grep -q "^$RELEASE_TAG$"; then
+              echo "🏷️ Deleting existing tag $RELEASE_TAG..."
+              git tag -d "$RELEASE_TAG" 2>/dev/null || true
+              git push origin --delete "$RELEASE_TAG" 2>/dev/null || true
+              echo "✅ Tag cleanup completed"
+            fi
+            
+            # 🔄 Wait a moment for GitHub API
+            sleep 3
+          else
+            echo "✅ No existing release found - proceeding with creation"
+          fi
+          
+          # 📦 Create release as DRAFT first (safe, reversible)
+          echo "🎯 **NEW STRATEGY**: Draft → Smart Tags → Publish + Latest"
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "🎯 **Strategy**: Draft → Smart Tags → Publish + Latest" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [[ "$IS_PRERELEASE" == "true" ]]; then
+            echo "🧪 Creating prerelease as DRAFT...."
+            
+            # 🛡️ Create as draft first
+            echo "🔍 Attempting to create draft prerelease with: gh release create '$RELEASE_TAG' --title '🧪 Prerelease $RELEASE_TAG' --notes-file release_notes.md --generate-notes --prerelease --draft"
+            
+            if gh release create "$RELEASE_TAG" \
+              --title "🧪 Prerelease $RELEASE_TAG" \
+              --notes-file release_notes.md \
+              --generate-notes \
+              --prerelease \
+              --draft; then
+              echo "🧪 **Created draft prerelease:** \`$RELEASE_TAG\`" >> $GITHUB_STEP_SUMMARY
+              echo "✅ Draft prerelease created successfully!"
+              echo "RELEASE_CREATED=true" >> $GITHUB_ENV
+            else
+              RELEASE_EXIT_CODE=$?
+              echo "⚠️ Draft release creation failed with exit code: $RELEASE_EXIT_CODE"
+              echo "🔍 Checking if release was actually created..."
+              
+              # Check if release exists despite the error
+              if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+                echo "✅ Release actually exists! This was likely a non-critical error."
+                echo "🧪 **Draft prerelease created (with warnings):** \`$RELEASE_TAG\`" >> $GITHUB_STEP_SUMMARY
+                echo "RELEASE_CREATED=true" >> $GITHUB_ENV
+              else
+                echo "❌ Release truly failed to be created"
+                echo "⚠️ **Release creation failed** - workflow continues" >> $GITHUB_STEP_SUMMARY
+                echo "RELEASE_CREATED=false" >> $GITHUB_ENV
+              fi
+            fi
+          else
+            echo "🚀 Creating stable release as DRAFT..."
+            
+            # 🛡️ Create as draft first  
+            echo "🔍 Attempting to create draft release with: gh release create '$RELEASE_TAG' --title '🚀 Release $RELEASE_TAG' --notes-file release_notes.md --generate-notes --draft"
+            
+            if gh release create "$RELEASE_TAG" \
+              --title "🚀 Release $RELEASE_TAG" \
+              --notes-file release_notes.md \
+              --generate-notes \
+              --draft; then
+              echo "🚀 **Created draft release:** \`$RELEASE_TAG\`" >> $GITHUB_STEP_SUMMARY
+              echo "✅ Draft release created successfully!"
+              echo "RELEASE_CREATED=true" >> $GITHUB_ENV
+            else
+              RELEASE_EXIT_CODE=$?
+              echo "⚠️ Release creation failed with exit code: $RELEASE_EXIT_CODE"
+              echo "🔍 Checking if release was actually created..."
+              
+              # Check if release exists despite the error
+              if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+                echo "✅ Release actually exists! This was likely a non-critical error."
+                echo "🚀 **Release created (with warnings):** \`$RELEASE_TAG\`" >> $GITHUB_STEP_SUMMARY
+              else
+                echo "❌ Release truly failed to be created"
+                echo "⚠️ **Release creation failed** - workflow continues" >> $GITHUB_STEP_SUMMARY
+              fi
+            fi
+          fi
+          
+          echo "✅ Release handling completed (creation or fallback)!"
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ **Release created successfully!**" >> $GITHUB_STEP_SUMMARY
+
+      - name: 🏷️ Create smart tags  
+        if: steps.version.outputs.bumpType != 'none'
+        run: |
+          git config user.name "${{ env.RELEASE_AUTHOR }}"
+          git config user.email "${{ env.RELEASE_EMAIL }}"
+          
+          # 📝 Summary header
+          echo "## 🏷️ Smart Tag Management" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          NEW_TAG="v${{ steps.version.outputs.newVersion }}"
+          MAJOR=$(echo "$NEW_TAG" | sed -E 's/^v([0-9]+)\..*/\1/')
+          MINOR=$(echo "$NEW_TAG" | sed -E 's/^v[0-9]+\.([0-9]+)\..*/\1/')
+          
+          # 🔍 MEGA DEBUG OUTPUT
+          echo "🔍 === SMART TAG DEBUG START ==="
+          echo "🔍 NEW_TAG='$NEW_TAG'"
+          echo "🔍 MAJOR='$MAJOR'"  
+          echo "🔍 MINOR='$MINOR'"
+          echo "🔍 newVersion='${{ steps.version.outputs.newVersion }}'"
+          echo "🔍 bumpType='${{ steps.version.outputs.bumpType }}'"
+          echo "🔍 Current HEAD commit: $(git rev-parse HEAD)"
+          echo "🔍 Current branch: $(git branch --show-current)"
+          echo "🔍 Existing tags on current commit:"
+          git tag --points-at HEAD || echo "🔍 No tags on HEAD"
+          
+          # 🔍 Enhanced tag fetching with detailed debugging
+          echo "🔍 === TAG FETCH DEBUGGING ==="
+          echo "🔍 Local tags before fetch:"
+          git tag -l | sort -V || echo "🔍 No local tags found"
+          
+          echo "🔍 Fetching all tags from remote (with detailed output)..."
+          # First, let's see what remote tags exist
+          echo "🔍 Remote tags available:"
+          git ls-remote --tags origin | head -10 || echo "🔍 No remote tags found"
+          
+          echo "🔍 Attempting git fetch --tags..."
+          if git fetch --tags 2>&1; then
+            echo "🔍 ✅ Tag fetch completed successfully"
+          else
+            FETCH_EXIT_CODE=$?
+            echo "🔍 ⚠️ Tag fetch failed with exit code: $FETCH_EXIT_CODE"
+            echo "🔍 Using --force to handle Smart Tag conflicts (expected behavior)..."
+            
+            if git fetch --tags --force 2>&1; then
+              echo "🔍 ✅ Force tag fetch completed successfully"
+            else
+              echo "🔍 ❌ Even force fetch failed - continuing anyway..."
+            fi
+          fi
+          
+          echo "🔍 All tags after fetch attempt:"
+          git tag -l | sort -V | head -10 || echo "🔍 No tags found after fetch"
+          
+          # Enhanced conflict detection with summary reporting
+          echo "🔍 Analyzing Smart Tag movements:"
+          TAG_MOVEMENTS=""
+          for tag in "v1" "v1.1" "latest"; do
+            if git tag -l "$tag" | grep -q "$tag"; then
+              LOCAL_COMMIT=$(git rev-parse "$tag" 2>/dev/null || echo "unknown")
+              echo "🔍 Local tag '$tag' points to: $LOCAL_COMMIT"
+              
+              # Check if remote has this tag
+              if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+                REMOTE_COMMIT=$(git ls-remote --tags origin "refs/tags/$tag" | cut -f1)
+                echo "🔍 Remote tag '$tag' points to: $REMOTE_COMMIT"
+                
+                if [[ "$LOCAL_COMMIT" != "$REMOTE_COMMIT" ]]; then
+                  echo "🔍 ✅ SMART TAG MOVED: '$tag' was updated from $LOCAL_COMMIT to $REMOTE_COMMIT"
+                  # Extract commit short hashes for summary
+                  LOCAL_SHORT=$(echo "$LOCAL_COMMIT" | cut -c1-8)
+                  REMOTE_SHORT=$(echo "$REMOTE_COMMIT" | cut -c1-8)
+                  TAG_MOVEMENTS="${TAG_MOVEMENTS}- 🔄 \`$tag\`: \`$LOCAL_SHORT\` → \`$REMOTE_SHORT\`"$'\n'
+                else
+                  echo "🔍 ✅ Tag '$tag' unchanged (both point to same commit)"
+                fi
+              else
+                echo "🔍 Remote tag '$tag' does not exist"
+              fi
+            else
+              echo "🔍 Local tag '$tag' does not exist"
+            fi
+          done
+          echo "🔍 === TAG FETCH DEBUGGING END ==="
+          
+          # Add tag movements to summary with enhanced parallel display
+          if [[ -n "$TAG_MOVEMENTS" ]]; then
+            echo "### 🔄 Smart Tag Updates (Parallel View):" >> $GITHUB_STEP_SUMMARY
+            echo "$TAG_MOVEMENTS" >> $GITHUB_STEP_SUMMARY
+            echo "✅ **All tags synchronized** - pointing to \`v${{ steps.version.outputs.newVersion }}\`" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Enhanced parallel tag status display with current version info
+          echo "### 🏷️ Live Tag Status (Current Repository State):" >> $GITHUB_STEP_SUMMARY
+          echo "| Tag | Current Target | Purpose | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|----------------|---------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| \`v${{ steps.version.outputs.newVersion }}\` | \`$(git rev-parse HEAD | cut -c1-8)\` | Exact version | ✅ New |" >> $GITHUB_STEP_SUMMARY
+          echo "| \`v$MAJOR\` | \`v${{ steps.version.outputs.newVersion }}\` | Auto-updated major | 🔄 Updated |" >> $GITHUB_STEP_SUMMARY
+          echo "| \`v$MAJOR.$MINOR\` | \`v${{ steps.version.outputs.newVersion }}\` | Auto-updated minor | 🔄 Updated |" >> $GITHUB_STEP_SUMMARY
+          echo "| \`latest\` | \`v${{ steps.version.outputs.newVersion }}\` | Always newest | 🔄 Updated |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Repository Sync Status:** 🔄 All tags synchronized with remote repository" >> $GITHUB_STEP_SUMMARY
+          
+          # 🔧 Ensure base tag exists (fallback if release creation failed)
+          if ! git tag -l "$NEW_TAG" | grep -q "$NEW_TAG"; then
+            echo "🔍 ⚠️ Base tag $NEW_TAG not found - creating locally"
+            git tag "$NEW_TAG" HEAD
+            echo "🔍 ✅ Created local tag $NEW_TAG on HEAD"
+          else
+            echo "🔍 ✅ Base tag $NEW_TAG exists"
+          fi
+          
+          echo "🔍 === SMART TAG DEBUG END ==="
+          
+          echo "## 🏷️ Smart Tag Management"
+          echo "**Base Version:** \`$NEW_TAG\` (created by GitHub Release)"
+          echo "**Bump Type:** \`${{ steps.version.outputs.bumpType }}\`"
+          echo "**Repository:** All tags will be synchronized to remote"
+          
+          echo "**Base Version:** \`$NEW_TAG\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Bump Type:** \`${{ steps.version.outputs.bumpType }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Repository Sync:** 🔄 All tags synchronized to remote repository" >> $GITHUB_STEP_SUMMARY
+          echo "**Previous Version:** \`${{ steps.version.outputs.currentVersion }}\` → **New Version:** \`${{ steps.version.outputs.newVersion }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Smart tag updates based on bump type (only for stable releases)
+          VERSION="${{ steps.version.outputs.newVersion }}"
+          echo "🔍 VERSION (again)='$VERSION'"
+          echo "🔍 Checking if prerelease...."
+          
+          # Initialize smart tags success tracking
+          SMART_TAGS_SUCCESS="true"
+          
+          if [[ ! "$VERSION" =~ (alpha|beta|rc|preview|pre) ]]; then
+            echo "🔍 ✅ STABLE RELEASE - proceeding with smart tags"
+            MINOR_TAG="v$MAJOR.$MINOR"
+            MAJOR_TAG="v$MAJOR"
+            
+            echo "🔍 MINOR_TAG='$MINOR_TAG'"
+            echo "🔍 MAJOR_TAG='$MAJOR_TAG'"
+            echo "🔍 About to enter case statement..."
+            
+            echo "### 🎯 Tags Updated:" >> $GITHUB_STEP_SUMMARY
+            
+            echo "🔍 Case statement input: '${{ steps.version.outputs.bumpType }}'"
+            case "${{ steps.version.outputs.bumpType }}" in
+              "patch")
+                echo "🔍 🎯 ENTERED PATCH CASE"
+                
+                # 🗑️ Delete existing moving tags first (clean slate)
+                echo "🔍 Deleting existing moving tags..."
+                git push --delete origin "$MINOR_TAG" 2>/dev/null || echo "🔍 $MINOR_TAG doesn't exist remotely"
+                git push --delete origin "$MAJOR_TAG" 2>/dev/null || echo "🔍 $MAJOR_TAG doesn't exist remotely"
+                git tag -d "$MINOR_TAG" 2>/dev/null || echo "🔍 $MINOR_TAG doesn't exist locally"
+                git tag -d "$MAJOR_TAG" 2>/dev/null || echo "🔍 $MAJOR_TAG doesn't exist locally"
+                
+                # 🆕 Create fresh tags pointing to new version
+                echo "🔍 Executing: git tag '$MINOR_TAG' '$NEW_TAG'"
+                git tag "$MINOR_TAG" "$NEW_TAG"
+                TAG_RESULT1=$?
+                echo "🔍 git tag result: $TAG_RESULT1"
+                
+                echo "🔍 Executing: git push origin '$MINOR_TAG'"
+                git push origin "$MINOR_TAG"
+                PUSH_RESULT1=$?
+                echo "🔍 git push result: $PUSH_RESULT1"
+                
+                echo "🔍 Executing: git tag '$MAJOR_TAG' '$NEW_TAG'"
+                git tag "$MAJOR_TAG" "$NEW_TAG"
+                TAG_RESULT2=$?
+                echo "🔍 git tag result: $TAG_RESULT2"
+                
+                echo "🔍 Executing: git push origin '$MAJOR_TAG'"
+                git push origin "$MAJOR_TAG"
+                PUSH_RESULT2=$?
+                echo "🔍 git push result: $PUSH_RESULT2"
+                
+                # Check if any tag operations failed
+                if [[ $TAG_RESULT1 -ne 0 || $PUSH_RESULT1 -ne 0 || $TAG_RESULT2 -ne 0 || $PUSH_RESULT2 -ne 0 ]]; then
+                  echo "⚠️ Some tag operations failed!"
+                  SMART_TAGS_SUCCESS="false"
+                fi
+                
+                echo "**Updated:** \`$MINOR_TAG\` + \`$MAJOR_TAG\`"
+                echo "- ✅ Updated: \`$MINOR_TAG\` → \`$NEW_TAG\` (exit: $TAG_RESULT1/$PUSH_RESULT1)" >> $GITHUB_STEP_SUMMARY
+                echo "- ✅ Updated: \`$MAJOR_TAG\` → \`$NEW_TAG\` (exit: $TAG_RESULT2/$PUSH_RESULT2)" >> $GITHUB_STEP_SUMMARY
+                ;;
+              "minor") 
+                echo "🔍 🎯 ENTERED MINOR CASE"
+                git tag "$MINOR_TAG" "$NEW_TAG" && git push origin "$MINOR_TAG"
+                git tag -f "$MAJOR_TAG" "$NEW_TAG" && git push -f origin "$MAJOR_TAG"
+                echo "**Created:** \`$MINOR_TAG\` **Updated:** \`$MAJOR_TAG\`"
+                echo "- 🆕 Created: \`$MINOR_TAG\` → \`$NEW_TAG\`" >> $GITHUB_STEP_SUMMARY
+                echo "- ✅ Updated: \`$MAJOR_TAG\` → \`$NEW_TAG\`" >> $GITHUB_STEP_SUMMARY
+                ;;
+              "major")
+                echo "🔍 🎯 ENTERED MAJOR CASE"
+                git tag "$MINOR_TAG" "$NEW_TAG" && git push origin "$MINOR_TAG"  
+                git tag "$MAJOR_TAG" "$NEW_TAG" && git push origin "$MAJOR_TAG"
+                echo "**Created:** \`$MINOR_TAG\` + \`$MAJOR_TAG\`"
+                echo "- 🆕 Created: \`$MINOR_TAG\` → \`$NEW_TAG\`" >> $GITHUB_STEP_SUMMARY
+                echo "- 🆕 Created: \`$MAJOR_TAG\` → \`$NEW_TAG\`" >> $GITHUB_STEP_SUMMARY
+                ;;
+              *)
+                echo "🔍 ❌ NO CASE MATCHED! bumpType='${{ steps.version.outputs.bumpType }}'"
+                echo "🔍 ❌ Available cases: patch, minor, major"
+                ;;
+            esac
+            
+            echo "🔍 Now updating 'latest' tag..."
+            # 🗑️ Delete existing latest tag first (clean slate)
+            echo "🔍 Deleting existing latest tag..."
+            git push --delete origin "latest" 2>/dev/null || echo "🔍 latest doesn't exist remotely"
+            git tag -d "latest" 2>/dev/null || echo "🔍 latest doesn't exist locally"
+            
+            # 🆕 Create fresh latest tag
+            git tag "latest" "$NEW_TAG" 
+            LATEST_TAG_RESULT=$?
+            echo "🔍 latest tag result: $LATEST_TAG_RESULT"
+            
+            git push origin "latest"
+            LATEST_PUSH_RESULT=$?
+            echo "🔍 latest push result: $LATEST_PUSH_RESULT"
+            
+            # Check if latest tag operations failed
+            if [[ $LATEST_TAG_RESULT -ne 0 || $LATEST_PUSH_RESULT -ne 0 ]]; then
+              echo "⚠️ Latest tag operations failed!"
+              SMART_TAGS_SUCCESS="false"
+            fi
+            
+            echo "**Updated:** \`latest\`"
+            echo "- ✅ Updated: \`latest\` → \`$NEW_TAG\` (exit: $LATEST_TAG_RESULT/$LATEST_PUSH_RESULT)" >> $GITHUB_STEP_SUMMARY
+            
+            # Export smart tags success status for next step
+            echo "SMART_TAGS_SUCCESS=$SMART_TAGS_SUCCESS" >> $GITHUB_ENV
+            echo "🔍 Smart Tags Success: $SMART_TAGS_SUCCESS"
+          else
+            echo "🔍 ⏭️ PRERELEASE DETECTED - skipping smart tags"
+            echo "⏭️ **Skipping smart tags** (prerelease version)"
+            echo "⏭️ **Skipped smart tags** (prerelease version)" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: 🚀 Publish Release (Final Step)
+        if: steps.version.outputs.bumpType != 'none'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 🎯 Final step: Publish the draft release with enhanced status
+          echo "## 🚀 Release Publication Status" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          RELEASE_TAG="v${{ steps.version.outputs.newVersion }}"
+          VERSION="${{ steps.version.outputs.newVersion }}"
+          
+          # Enhanced release status display
+          echo "**Release Target:** \`$RELEASE_TAG\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Publication Date:** $(date -u '+%B %d, %Y at %H:%M UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "**Repository:** [${GITHUB_REPOSITORY}](https://github.com/${GITHUB_REPOSITORY})" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Check if we created a release earlier
+          if [[ "${RELEASE_CREATED:-false}" == "true" ]]; then
+            echo "✅ Release was created as draft - proceeding with publication..."
+            
+            # Only proceed if smart tags were successful (or if it's a prerelease)
+            if [[ "${SMART_TAGS_SUCCESS:-true}" == "true" || "$VERSION" =~ (alpha|beta|rc|preview|pre) ]]; then
+              echo "✅ Smart tags successful (or prerelease) - proceeding with publication"
+            
+            # Check if this is a prerelease
+            if [[ "$VERSION" =~ (alpha|beta|rc|preview|pre) ]]; then
+              echo "🧪 Publishing prerelease..."
+              if gh release edit "$RELEASE_TAG" --draft=false; then
+                echo "✅ Prerelease published successfully!"
+                echo "🧪 **Prerelease published:** \`$RELEASE_TAG\`" >> $GITHUB_STEP_SUMMARY
+              else
+                echo "⚠️ Failed to publish prerelease, but it exists as draft"
+                echo "⚠️ **Prerelease publication failed** (remains as draft)" >> $GITHUB_STEP_SUMMARY
+              fi
+            else
+              echo "🚀 Publishing stable release with latest flag..."
+              if gh release edit "$RELEASE_TAG" --draft=false --latest; then
+                echo "✅ Stable release published and marked as latest!"
+                echo "🚀 **Stable release published and marked latest:** \`$RELEASE_TAG\`" >> $GITHUB_STEP_SUMMARY
+              else
+                echo "⚠️ Failed to publish release or mark as latest"
+                # Try just publishing without latest flag
+                if gh release edit "$RELEASE_TAG" --draft=false; then
+                  echo "✅ Release published (but latest status unclear)"
+                  echo "🚀 **Release published:** \`$RELEASE_TAG\` (latest status unclear)" >> $GITHUB_STEP_SUMMARY
+                else
+                  echo "❌ Failed to publish release at all"
+                  echo "❌ **Release publication failed** (remains as draft)" >> $GITHUB_STEP_SUMMARY
+                fi
+              fi
+            fi
+            
+            # Final verification
+            echo "🔍 Final release verification:"
+            if gh release view "$RELEASE_TAG" --json isDraft,isLatest; then
+              echo "✅ Release verification completed"
+            else
+              echo "⚠️ Release verification failed"
+            fi
+            
+            else
+              echo "❌ Smart tags failed - keeping release as draft for safety"
+              echo "❌ **Release kept as draft** (smart tags failed)" >> $GITHUB_STEP_SUMMARY
+              echo "🔧 **Manual action required**: Fix smart tags, then manually publish release"
+            fi
+            
+          else
+            echo "❌ No release was created in the earlier step - skipping publication"
+            echo "❌ **No release to publish** (creation failed earlier)" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  notify:
+    name: 📣 Deploy Notification
+    needs: [validate, release]
+    if: needs.release.outputs.release-created == 'true' && needs.validate.outputs.test-success == 'true'
+    runs-on: ${{ vars.UBUNTU_VERSION || 'ubuntu-24.04' }}
+    steps:
+      - name: 📣 Info - Notify deployment pipeline
+        run: |
+          # 📝 Summary header
+          echo "## 📣 Deployment Notification" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "## 📣 Deployment Notification"
+          echo "**Target:** K.PSGallery deployment pipeline"
+          echo "**Version:** v${{ needs.release.outputs.new-version }}"
+          echo "**Bump Type:** ${{ needs.release.outputs.bump-type }}"
+          
+          # Enhanced summary with direct links
+          echo "**Target:** 🎯 [K.PSGallery Repository](https://github.com/GrexyLoco/K.PSGallery) deployment" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** \`v${{ needs.release.outputs.new-version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Bump Type:** \`${{ needs.release.outputs.bump-type }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔗 Quick Links:" >> $GITHUB_STEP_SUMMARY
+          echo "- 📦 [PowerShell Gallery Package](https://www.powershellgallery.com/packages/K.PSGallery.PesterTestDiscovery)" >> $GITHUB_STEP_SUMMARY
+          echo "- 🔄 [Deployment Pipeline](https://github.com/GrexyLoco/K.PSGallery/actions)" >> $GITHUB_STEP_SUMMARY
+          echo "- 📋 [Source Repository](https://github.com/${{ github.repository }})" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Send repository dispatch with proper error handling
+          echo "🚀 Triggering deployment pipeline..."
+
+      - name: Execute - Notify deployment pipeline
+        uses: peter-evans/repository-dispatch@v3
+        with:
+            token: ${{ secrets.REPO_DISPATCH_TOKEN }}
+            repository: grexyloco/K.PSGallery
+            event-type: publish_module
+            client-payload: |
+              {
+                "repo": "${{ github.repository }}",
+                "tag": "v${{ needs.release.outputs.new-version }}",
+                "bump_type": "${{ needs.release.outputs.bump-type }}",
+                "triggered_by": "${{ github.actor }}",
+                "source_url": "https://github.com/${{ github.repository }}",
+                "gallery_url": "https://www.powershellgallery.com/packages/K.PSGallery.PesterTestDiscovery/${{ needs.release.outputs.new-version }}"
+              }
