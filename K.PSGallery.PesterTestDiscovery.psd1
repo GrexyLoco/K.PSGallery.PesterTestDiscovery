@@ -12,13 +12,13 @@
     GUID = 'a1b2c3d4-e5f6-7890-1234-567890abcdef'
 
     # Author of this module
-    Author = 'GrexyLoco'
+    Author = '1d70f'
 
     # Company or vendor of this module
-    CompanyName = 'GrexyLoco'
+    CompanyName = '1d70f'
 
     # Copyright statement for this module
-    Copyright = '(c) 2025 GrexyLoco. All rights reserved.'
+    Copyright = '(c) 2025 1d70f. All rights reserved.'
 
     # Description of the functionality provided by this module
     Description = 'PowerShell module for intelligent Pester test discovery using strict naming conventions. Supports auto-discovery with fixed folder and file patterns for reliable CI/CD integration.'
